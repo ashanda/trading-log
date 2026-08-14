@@ -182,6 +182,10 @@
     {{ error }}
   </div>
 
+  <div v-if="chartLibMissing" class="panel" style="border-color:var(--amber);color:var(--amber);margin-bottom:18px;">
+    ⚠ Chart library couldn't load (check your internet connection or ad-blocker). Data and the Excel export still work — only the graphs are affected.
+  </div>
+
   <div v-if="!rows.length && !error" class="empty-state">
     <div class="glyph">▲▼</div>
     <h2>No data yet</h2>
@@ -317,6 +321,7 @@ createApp({
       barChartInst: null,
       pieChartInst: null,
       lineChartInst: null,
+      chartLibMissing: false,
     }
   },
   computed:{
@@ -449,7 +454,6 @@ createApp({
         this.rawTrades = trades;
         this.rows = this.processFIFO(trades);
         this.error='';
-        this.$nextTick(()=> this.renderCharts());
       }catch(err){
         this.error = 'Could not process file: ' + err.message;
       }
@@ -518,71 +522,95 @@ createApp({
       return out;
     },
     renderCharts(){
+      if(typeof Chart === 'undefined'){
+        console.error('Chart.js failed to load — check your internet connection or ad-blocker.');
+        this.chartLibMissing = true;
+        return;
+      }
+      const barEl = this.$refs.barChart;
+      const pieEl = this.$refs.pieChart;
+      const lineEl = this.$refs.lineChart;
+      if(!barEl || !pieEl || !lineEl) return; // DOM not ready yet
+
+      // Fully destroy any chart already attached to these canvases (avoids
+      // "Canvas is already in use" errors if render is triggered twice)
+      [this.barChartInst, this.pieChartInst, this.lineChartInst].forEach(c=>{ try{ c && c.destroy(); }catch(e){} });
+      [barEl, pieEl, lineEl].forEach(el=>{
+        const existing = Chart.getChart(el);
+        if(existing) existing.destroy();
+      });
+      this.barChartInst = this.pieChartInst = this.lineChartInst = null;
+
       const palette = ['#3fa9f5','#35c48c','#f5b342','#ef5a6f','#a26bfa','#39c0c9','#f27c3a','#7c8898','#6ad1ff'];
-      [this.barChartInst,this.pieChartInst,this.lineChartInst].forEach(c=>c&&c.destroy());
 
       // Bar
-      const symPL = this.symbolPL;
-      this.barChartInst = new Chart(this.$refs.barChart, {
-        type:'bar',
-        data:{
-          labels: symPL.map(s=>s.symbol),
-          datasets:[{
-            data: symPL.map(s=>s.pl),
-            backgroundColor: symPL.map(s=> s.pl>=0 ? '#35c48c' : '#ef5a6f'),
-            borderRadius:5, maxBarThickness:34
-          }]
-        },
-        options:{
-          plugins:{legend:{display:false}},
-          scales:{
-            x:{grid:{display:false}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:11}}},
-            y:{grid:{color:'#232c39'}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:11}}}
+      try{
+        const symPL = this.symbolPL;
+        this.barChartInst = new Chart(barEl, {
+          type:'bar',
+          data:{
+            labels: symPL.map(s=>s.symbol),
+            datasets:[{
+              data: symPL.map(s=>s.pl),
+              backgroundColor: symPL.map(s=> s.pl>=0 ? '#35c48c' : '#ef5a6f'),
+              borderRadius:5, maxBarThickness:34
+            }]
           },
-          responsive:true, maintainAspectRatio:false
-        }
-      });
+          options:{
+            plugins:{legend:{display:false}},
+            scales:{
+              x:{grid:{display:false}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:11}}},
+              y:{grid:{color:'#232c39'}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:11}}}
+            },
+            responsive:true, maintainAspectRatio:false
+          }
+        });
+      }catch(e){ console.error('Bar chart failed:', e); }
 
       // Pie
-      this.pieChartInst = new Chart(this.$refs.pieChart, {
-        type:'doughnut',
-        data:{
-          labels:['Win','Loss'],
-          datasets:[{ data:[this.winCount, this.lossCount], backgroundColor:['#35c48c','#ef5a6f'], borderWidth:0 }]
-        },
-        options:{
-          plugins:{legend:{position:'bottom', labels:{color:'#e7ecf2', font:{family:'Space Grotesk',size:12}}}},
-          cutout:'62%',
-          responsive:true, maintainAspectRatio:false
-        }
-      });
+      try{
+        this.pieChartInst = new Chart(pieEl, {
+          type:'doughnut',
+          data:{
+            labels:['Win','Loss'],
+            datasets:[{ data:[this.winCount, this.lossCount], backgroundColor:['#35c48c','#ef5a6f'], borderWidth:0 }]
+          },
+          options:{
+            plugins:{legend:{position:'bottom', labels:{color:'#e7ecf2', font:{family:'Space Grotesk',size:12}}}},
+            cutout:'62%',
+            responsive:true, maintainAspectRatio:false
+          }
+        });
+      }catch(e){ console.error('Pie chart failed:', e); }
 
       // Line - cumulative P/L
-      let cum=0;
-      const cumPoints = this.exitRows
-        .slice()
-        .sort((a,b)=> (a.date+a.time)<(b.date+b.time)?-1:1)
-        .map(r=>{ cum+=r.total; return {x:r.date+' '+r.time.slice(0,5), y:+cum.toFixed(4)}; });
+      try{
+        let cum=0;
+        const cumPoints = this.exitRows
+          .slice()
+          .sort((a,b)=> (a.date+a.time)<(b.date+b.time)?-1:1)
+          .map(r=>{ cum+=r.total; return {x:r.date+' '+r.time.slice(0,5), y:+cum.toFixed(4)}; });
 
-      this.lineChartInst = new Chart(this.$refs.lineChart, {
-        type:'line',
-        data:{
-          labels: cumPoints.map(p=>p.x),
-          datasets:[{
-            data: cumPoints.map(p=>p.y),
-            borderColor:'#3fa9f5', backgroundColor:'rgba(63,169,245,0.12)',
-            fill:true, tension:.25, pointRadius:2, pointBackgroundColor:'#3fa9f5'
-          }]
-        },
-        options:{
-          plugins:{legend:{display:false}},
-          scales:{
-            x:{grid:{display:false}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:9}, maxRotation:60, minRotation:60, autoSkip:true, maxTicksLimit:14}},
-            y:{grid:{color:'#232c39'}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:11}}}
+        this.lineChartInst = new Chart(lineEl, {
+          type:'line',
+          data:{
+            labels: cumPoints.map(p=>p.x),
+            datasets:[{
+              data: cumPoints.map(p=>p.y),
+              borderColor:'#3fa9f5', backgroundColor:'rgba(63,169,245,0.12)',
+              fill:true, tension:.25, pointRadius:2, pointBackgroundColor:'#3fa9f5'
+            }]
           },
-          responsive:true, maintainAspectRatio:false
-        }
-      });
+          options:{
+            plugins:{legend:{display:false}},
+            scales:{
+              x:{grid:{display:false}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:9}, maxRotation:60, minRotation:60, autoSkip:true, maxTicksLimit:14}},
+              y:{grid:{color:'#232c39'}, ticks:{color:'#7c8898', font:{family:'JetBrains Mono',size:11}}}
+            },
+            responsive:true, maintainAspectRatio:false
+          }
+        });
+      }catch(e){ console.error('Line chart failed:', e); }
     },
     async exportExcel(){
       const rows = this.filteredRows;
